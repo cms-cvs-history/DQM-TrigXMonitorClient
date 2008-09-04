@@ -1,0 +1,5 @@
+module l1tsClient = L1ScalersClient{
+
+# no configuration yet
+
+}
