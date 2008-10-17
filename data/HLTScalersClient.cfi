@@ -1,5 +1,0 @@
-module hltsClient = HLTScalersClient{
-
-# no configuration yet
-
-}
