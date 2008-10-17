@@ -1,7 +1,0 @@
-module l1tsClient = L1ScalersClient{
-
-untracked vint32 algoMonitorBits = {54,55,56}
-untracked vint32 techMonitorBits = {1,2,9}
-untracked string dqmFolder = "L1T/L1Scalers_EvF"
-
-}
