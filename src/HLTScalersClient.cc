@@ -1,9 +1,6 @@
-// $Id: HLTScalersClient.cc,v 1.14 2010/02/02 11:44:20 wittich Exp $
+// $Id: HLTScalersClient.cc,v 1.13 2009/12/15 20:41:16 wittich Exp $
 // 
 // $Log: HLTScalersClient.cc,v $
-// Revision 1.14  2010/02/02 11:44:20  wittich
-// more diagnostics for online scalers
-//
 // Revision 1.13  2009/12/15 20:41:16  wittich
 // better hlt scalers client
 //
@@ -36,8 +33,7 @@
 using edm::LogInfo;
 using edm::LogWarning;
 
-// I am not sure this is right at more than 10%
-#define SECS_PER_LUMI_SECTION 23.3 
+#define SECS_PER_LUMI_SECTION 93.3
 const int kPerHisto = 20;
 
 
@@ -417,7 +413,7 @@ void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg,
   MonitorElement *hltScaler = dbe_->get(overallScalerName);
   if ( hltScaler != 0 ) {
     double current_count = hltScaler->getBinContent(1);
-    hltCount_->setBinContent(nL,current_count);
+    hltCount_->Fill(current_count);
     if ( recentOverallCountsPerLS_.empty() ||
 	 current_count >= recentOverallCountsPerLS_.front().second ) {
       // good data
