@@ -1,6 +1,9 @@
-// $Id: HLTScalersClient.cc,v 1.19 2010/07/20 02:58:27 wmtan Exp $
+// $Id: HLTScalersClient.cc,v 1.19.1.1 2011/03/09 23:27:31 slaunwhj Exp $
 // 
 // $Log: HLTScalersClient.cc,v $
+// Revision 1.19.1.1  2011/03/09 23:27:31  slaunwhj
+// Moved all the processing from endLuminosityBlock to the 'analyze' method, minor cleanups
+//
 // Revision 1.19  2010/07/20 02:58:27  wmtan
 // Add missing #include files
 //
@@ -164,6 +167,7 @@ void HLTScalersClient::analyze(const edm::Event& e, const edm::EventSetup& c )
 {
 
 
+  bool debugPd = false;
   if (debug_) std::cout << "TRIGX_CLIENT    "
                         << "Beginning to do histogram manipulation" << std::endl
                         << "Folder Name is " << folderName_ << endl;
@@ -193,11 +197,35 @@ void HLTScalersClient::analyze(const edm::Event& e, const edm::EventSetup& c )
     return;
   }
 
+  // get raw data
+  std::string pdScalHistoName = folderName_ + "/raw/pdScalers";
+  MonitorElement *pdScalers = dbe_->get(pdScalHistoName);
+
+  bool foundPDScalers = (pdScalers != 0) ? true : false;
+
+  if (!foundPDScalers) {
+    
+    if (debugPd)
+      std::cout << "No PD histo? Looking for " 
+                << pdScalHistoName
+                << " but continuing without it"
+                << std::endl;    
+  }
+  
 
   int npaths = scalers->getNbinsX();
   if ( npaths > MAX_PATHS ) npaths = MAX_PATHS; // HARD CODE FOR NOW
   LogDebug("HLTScalersClient") << "I see " << npaths << " paths. ";
 
+
+
+  int numPDs = 0;
+
+  if (foundPDScalers) {
+    numPDs = pdScalers->getNbinsX();
+  }
+
+  
   // set the bin labels on the first go-through
   // I need to do this here because we don't have the paths yet
   // on begin-run. I should do this in a less ugly way (see FV?)
@@ -227,6 +255,7 @@ void HLTScalersClient::analyze(const edm::Event& e, const edm::EventSetup& c )
     hltCurrentNormRate_.reserve(npaths);
     rateNormHistories_. reserve(npaths);
 
+
     dbe_->setCurrentFolder(folderName_); // these belong in top-level
     for (int i = 0; i < npaths; ++i ) {
       dbe_->setCurrentFolder(std::string(rates_subfolder)+"/raw");
@@ -246,6 +275,38 @@ void HLTScalersClient::analyze(const edm::Event& e, const edm::EventSetup& c )
       // prefill the data structures
       recentPathCountsPerLS_.push_back(CountLSFifo_t(kRateIntegWindow_));
       recentNormedPathCountsPerLS_.push_back(CountLSFifo_t(2));
+    }
+    dbe_->setCurrentFolder(folderName_);
+
+    // Primary Datasets
+    // only create the histos if you have a reference from the hlt nodes
+    if (foundPDScalers){
+      hltPdRate_.reserve(numPDs);
+
+
+      // For each pd in the scalers
+      // create a histogram of the rate
+      for (int i = 0; i < numPDs; i++){
+        dbe_->setCurrentFolder(folderName_ + "/pdRates");
+
+        // Just name the histogram based on the name of the
+        // bins in the PD scalers
+        // bins should be i+1
+        TString pdName = pdScalers->getTH1()->GetXaxis()->GetBinLabel(i+1);
+        TString histoName = Form("rate_pd_%s", pdName.Data());
+        TString countHistoName = Form("count_pd_%s", pdName.Data());
+        
+        hltPdRate_.push_back(dbe_->book1D(histoName, histoName, MAX_LUMI_SEG_HLT, 
+                                          -0.5, MAX_LUMI_SEG_HLT-0.5));
+
+        hltPdCount_.push_back(dbe_->book1D(countHistoName, countHistoName, MAX_LUMI_SEG_HLT, 
+                                          -0.5, MAX_LUMI_SEG_HLT-0.5));
+
+        // create some wacky data structures to handle counts
+        recentPdCountsPerLS_.push_back(CountLSFifo_t(kRateIntegWindow_));        
+
+      }
+      
     }
     dbe_->setCurrentFolder(folderName_);
 
@@ -370,15 +431,40 @@ void HLTScalersClient::analyze(const edm::Event& e, const edm::EventSetup& c )
   
   std::string nLumiHisto(folderName_ + "/nLumiBlock");
   MonitorElement *nLumi = dbe_->get(nLumiHisto);
-  if ( nLumi == 0 ) {
+  bool foundLumi = (nLumi != 0)? true : false;
+  if ( !foundLumi ) {
+    
+                 
     nLumiHisto = folderName_ + "/raw/nLumiBlock";
+    
+    if (debugPd) cout << "... making  second attempt to get lumi info name = "
+                      << nLumiHisto ;
+    
     nLumi = dbe_->get(nLumiHisto);
+    
+    foundLumi = (nLumi != 0)? true : false;
+
+    if (debugPd) cout << " ... did we get it? " << foundLumi << endl;
   }
-  int testval = (nLumi!=0?nLumi->getIntValue():-1);
-  LogDebug("HLTScalersClient") << "Lumi Block from DQM: "
-			<< testval
-			<< ", local is " << nLumi_;
-  int nL = (nLumi!=0?nLumi->getIntValue():nLumi_);
+
+  // drastically changed the way we do this
+  // to make it work for testing too
+  // it should be fine for online all the time
+  
+  int nL = 0;
+  if (foundLumi){
+    if (nLumi->getIntValue() >=1){
+      nL = nLumi->getIntValue();
+    } else {
+      nL = nLumi_;
+    }
+  }
+
+  if (debugPd)  cout << "Lumi Block from DQM: "
+                     << ((foundLumi) ? nLumi->getIntValue(): -999)
+                     << ", local is " << nLumi_
+                     << ", final Value is " << nL << endl;
+  
 
   if ( nL > MAX_LUMI_SEG_HLT ) {
     LogDebug("HLTScalersClient") << "Too many Lumi segments, "
@@ -627,6 +713,65 @@ void HLTScalersClient::analyze(const edm::Event& e, const edm::EventSetup& c )
       }
     }
   }
+
+  /////////////////////////////////
+  //
+  //  JMS Try to fill PD rates
+  //
+  /////////////////////////////////
+
+  if (foundPDScalers) {
+
+
+    //   The counts for each PD correspond to 
+    //   a bin in the PD scalers histos
+    //
+    //  Loop over bins, turn the counts into a rate
+    //  and store the rate in the right histogram
+    
+    for (int i = 0; i < numPDs; i++){
+
+
+      // make sure you account for not just the events in the
+      // new scaler histo
+      // but also the events in the current histo
+      
+      double current_count = pdScalers->getBinContent(i+1);
+      
+      // Mess around with silly rate estimate
+
+      // give this crazy data structure some new info
+      recentPdCountsPerLS_[i].update(CountLS_t(nL, current_count));
+
+      // get a slope estimate of rate
+      // that is "smoothed" somehow
+      // not sure how this works
+      // but being consistent with other rates
+
+      std::pair<double,double> estimatedRateAndErr = getSlope_(recentPdCountsPerLS_[i]);
+
+      // first part is slope, second is error
+      double estimatedRate = estimatedRateAndErr.first;
+      
+      hltPdRate_[i]->setBinContent(nL, estimatedRate);
+
+      // Add the current count to any other counts for this
+      // current lumi section
+      
+      double tempBinContent = hltPdCount_[i]->getBinContent(nL);
+
+      double totalCounts = tempBinContent + current_count;
+      hltPdCount_[i]->setBinContent(nL, totalCounts);
+      if (debugPd && (totalCounts > 0)) {
+        cout << "Just filled " << hltPdCount_[i]->getTitle()
+             << " for LS = " << nL
+             << "  with  count = " << totalCounts << endl; 
+      }
+
+
+    }
+    
+  }// end if found pd scalers
 
 }
 
