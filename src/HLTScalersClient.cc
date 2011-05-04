@@ -1,6 +1,9 @@
-// $Id: HLTScalersClient.cc,v 1.19.1.1 2011/03/09 23:27:31 slaunwhj Exp $
+// $Id: HLTScalersClient.cc,v 1.19.1.2 2011/04/13 22:21:56 slaunwhj Exp $
 // 
 // $Log: HLTScalersClient.cc,v $
+// Revision 1.19.1.2  2011/04/13 22:21:56  slaunwhj
+// pd rate monitoring first attempt
+//
 // Revision 1.19.1.1  2011/03/09 23:27:31  slaunwhj
 // Moved all the processing from endLuminosityBlock to the 'analyze' method, minor cleanups
 //
@@ -431,37 +434,22 @@ void HLTScalersClient::analyze(const edm::Event& e, const edm::EventSetup& c )
   
   std::string nLumiHisto(folderName_ + "/nLumiBlock");
   MonitorElement *nLumi = dbe_->get(nLumiHisto);
-  bool foundLumi = (nLumi != 0)? true : false;
-  if ( !foundLumi ) {
-    
-                 
-    nLumiHisto = folderName_ + "/raw/nLumiBlock";
-    
-    if (debugPd) cout << "... making  second attempt to get lumi info name = "
-                      << nLumiHisto ;
-    
-    nLumi = dbe_->get(nLumiHisto);
-    
-    foundLumi = (nLumi != 0)? true : false;
-
-    if (debugPd) cout << " ... did we get it? " << foundLumi << endl;
-  }
-
   // drastically changed the way we do this
   // to make it work for testing too
   // it should be fine for online all the time
-  
-  int nL = 0;
-  if (foundLumi){
-    if (nLumi->getIntValue() >=1){
-      nL = nLumi->getIntValue();
-    } else {
-      nL = nLumi_;
-    }
-  }
+   if ( nLumi == 0 ) {
+    nLumiHisto = folderName_ + "/raw/nLumiBlock";
+    nLumi = dbe_->get(nLumiHisto);
+   }
 
-  if (debugPd)  cout << "Lumi Block from DQM: "
-                     << ((foundLumi) ? nLumi->getIntValue(): -999)
+  int testval = (nLumi!=0?nLumi->getIntValue():-1);
+  LogDebug("HLTScalersClient") << "Lumi Block from DQM: "
+			<< testval
+			<< ", local is " << nLumi_;
+  int nL = (nLumi!=0?nLumi->getIntValue():nLumi_);
+ 
+   if (debugPd)  cout << "Lumi Block from DQM: "
+     //<< ((foundLumi) ? nLumi->getIntValue(): -999)
                      << ", local is " << nLumi_
                      << ", final Value is " << nL << endl;
   
