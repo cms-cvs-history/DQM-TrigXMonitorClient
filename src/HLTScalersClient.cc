@@ -1,6 +1,15 @@
-// $Id: HLTScalersClient.cc,v 1.18 2010/04/02 20:48:12 wittich Exp $
+// $Id: HLTScalersClient.cc,v 1.19.1.2 2011/04/13 22:21:56 slaunwhj Exp $
 // 
 // $Log: HLTScalersClient.cc,v $
+// Revision 1.19.1.2  2011/04/13 22:21:56  slaunwhj
+// pd rate monitoring first attempt
+//
+// Revision 1.19.1.1  2011/03/09 23:27:31  slaunwhj
+// Moved all the processing from endLuminosityBlock to the 'analyze' method, minor cleanups
+//
+// Revision 1.19  2010/07/20 02:58:27  wmtan
+// Add missing #include files
+//
 // Revision 1.18  2010/04/02 20:48:12  wittich
 // updates to scale entries by received number of FU's
 //
@@ -53,6 +62,10 @@
 
 using edm::LogInfo;
 using edm::LogWarning;
+
+using std::cout;
+using std::endl;
+
 
 // I am not sure this is right at more than 10%
 #define SECS_PER_LUMI_SECTION 23.31
@@ -151,10 +164,27 @@ void HLTScalersClient::endRun(const edm::Run& run, const edm::EventSetup& c)
 void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg, 
 			const edm::EventSetup& c)
 {
-  nLumi_ = lumiSeg.id().luminosityBlock();
+}
+
+void HLTScalersClient::analyze(const edm::Event& e, const edm::EventSetup& c ) 
+{
+
+
+  bool debugPd = false;
+  if (debug_) std::cout << "TRIGX_CLIENT    "
+                        << "Beginning to do histogram manipulation" << std::endl
+                        << "Folder Name is " << folderName_ << endl;
+  
+
+  LogDebug("HLTScalersClient") << "Checkin to see if LogDebug is working" << endl;
+
+  
+  nLumi_ = e.id().luminosityBlock();
+
+  // Never show directory structure
   // PWDEBUG
-  if ( first_ && debug_)
-    dbe_->showDirStructure();
+  //  if ( first_ && debug_)
+  //   dbe_->showDirStructure();
   // PWDEBUG END
 
   // get raw data
@@ -170,11 +200,35 @@ void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg,
     return;
   }
 
+  // get raw data
+  std::string pdScalHistoName = folderName_ + "/raw/pdScalers";
+  MonitorElement *pdScalers = dbe_->get(pdScalHistoName);
+
+  bool foundPDScalers = (pdScalers != 0) ? true : false;
+
+  if (!foundPDScalers) {
+    
+    if (debugPd)
+      std::cout << "No PD histo? Looking for " 
+                << pdScalHistoName
+                << " but continuing without it"
+                << std::endl;    
+  }
+  
 
   int npaths = scalers->getNbinsX();
   if ( npaths > MAX_PATHS ) npaths = MAX_PATHS; // HARD CODE FOR NOW
   LogDebug("HLTScalersClient") << "I see " << npaths << " paths. ";
 
+
+
+  int numPDs = 0;
+
+  if (foundPDScalers) {
+    numPDs = pdScalers->getNbinsX();
+  }
+
+  
   // set the bin labels on the first go-through
   // I need to do this here because we don't have the paths yet
   // on begin-run. I should do this in a less ugly way (see FV?)
@@ -204,6 +258,7 @@ void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg,
     hltCurrentNormRate_.reserve(npaths);
     rateNormHistories_. reserve(npaths);
 
+
     dbe_->setCurrentFolder(folderName_); // these belong in top-level
     for (int i = 0; i < npaths; ++i ) {
       dbe_->setCurrentFolder(std::string(rates_subfolder)+"/raw");
@@ -223,6 +278,38 @@ void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg,
       // prefill the data structures
       recentPathCountsPerLS_.push_back(CountLSFifo_t(kRateIntegWindow_));
       recentNormedPathCountsPerLS_.push_back(CountLSFifo_t(2));
+    }
+    dbe_->setCurrentFolder(folderName_);
+
+    // Primary Datasets
+    // only create the histos if you have a reference from the hlt nodes
+    if (foundPDScalers){
+      hltPdRate_.reserve(numPDs);
+
+
+      // For each pd in the scalers
+      // create a histogram of the rate
+      for (int i = 0; i < numPDs; i++){
+        dbe_->setCurrentFolder(folderName_ + "/pdRates");
+
+        // Just name the histogram based on the name of the
+        // bins in the PD scalers
+        // bins should be i+1
+        TString pdName = pdScalers->getTH1()->GetXaxis()->GetBinLabel(i+1);
+        TString histoName = Form("rate_pd_%s", pdName.Data());
+        TString countHistoName = Form("count_pd_%s", pdName.Data());
+        
+        hltPdRate_.push_back(dbe_->book1D(histoName, histoName, MAX_LUMI_SEG_HLT, 
+                                          -0.5, MAX_LUMI_SEG_HLT-0.5));
+
+        hltPdCount_.push_back(dbe_->book1D(countHistoName, countHistoName, MAX_LUMI_SEG_HLT, 
+                                          -0.5, MAX_LUMI_SEG_HLT-0.5));
+
+        // create some wacky data structures to handle counts
+        recentPdCountsPerLS_.push_back(CountLSFifo_t(kRateIntegWindow_));        
+
+      }
+      
     }
     dbe_->setCurrentFolder(folderName_);
 
@@ -290,6 +377,7 @@ void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg,
   }
   // MEGA-HACK
   if ( missingPathNames_) {
+    if (debug_) cout << "Oh no, you're trying to load names from a text file" <<endl;
     // if that didn't work we load 'em from a text file. damn straight.
     int ipath = 1;
     std::ifstream names("names.dat");
@@ -332,19 +420,40 @@ void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg,
   }
 
 
-  // END SETUP
+  if (debug_) cout << "Done with setup, looking at histograms "
+                   << " for DQM lumi block nLumi = " << nLumi_ << endl;
 
+  ///////////////////////////////////////////////////////
+  //
+  //
+  //                 END SETUP
+  //                 Begin booking histos
+  //
+  //
+  ////////////////////////////////////////////////////////
+  
   std::string nLumiHisto(folderName_ + "/nLumiBlock");
   MonitorElement *nLumi = dbe_->get(nLumiHisto);
-  if ( nLumi == 0 ) {
+  // drastically changed the way we do this
+  // to make it work for testing too
+  // it should be fine for online all the time
+   if ( nLumi == 0 ) {
     nLumiHisto = folderName_ + "/raw/nLumiBlock";
     nLumi = dbe_->get(nLumiHisto);
-  }
+   }
+
   int testval = (nLumi!=0?nLumi->getIntValue():-1);
   LogDebug("HLTScalersClient") << "Lumi Block from DQM: "
 			<< testval
 			<< ", local is " << nLumi_;
   int nL = (nLumi!=0?nLumi->getIntValue():nLumi_);
+ 
+   if (debugPd)  cout << "Lumi Block from DQM: "
+     //<< ((foundLumi) ? nLumi->getIntValue(): -999)
+                     << ", local is " << nLumi_
+                     << ", final Value is " << nL << endl;
+  
+
   if ( nL > MAX_LUMI_SEG_HLT ) {
     LogDebug("HLTScalersClient") << "Too many Lumi segments, "
 				 << nL << " is greater than MAX_LUMI_SEG_HLT,"
@@ -371,38 +480,80 @@ void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg,
 
   // evaluate the data
   // loop over current counts
+  
+  if (debug_) cout << "Scalers name is  " << scalers->getName() << endl
+                   << "Looping over paths in the scalers " << endl;
+                   
 
   // this gets filled for all times. Mainly for debugging.
+  if (debug_) cout << "====================  Scalers loop over paths " << scalers->getName() << "==============" << endl;
   for ( int i = 1; i <= npaths; ++i ) { // bins start at 1
     double current_count = scalers->getBinContent(i);
     // nb that this will now _overwrite_ some settings
-    countHistories_[i-1]->setBinContent(nL, current_count); // good or bad
+
+    if ( debug_ && ( current_count > 0) ) {
+      cout << "Path name is    " << scalers->getTH1()->GetXaxis()->GetBinLabel(i)
+           << "   counts are  " << current_count 
+           << "   setting content in histogram " << countHistories_[i-1]->getName() << endl;
+    }
+
+    double tempBinContent = countHistories_[i-1]->getBinContent(nL);
+    if (debug_ && i==11) {
+      cout << "(run, lumi, evt) = ("
+           << e.id().run() << ", " << nL << ", " << e.id().event() << ")"
+           << " filling with " << current_count << " + " << tempBinContent
+           << " = " << current_count+tempBinContent  
+           << endl;
+    }
+    countHistories_[i-1]->setBinContent(nL, current_count+tempBinContent); // good or bad
   }
 
   std::string overallScalerName(folderName_ + "/raw/hltOverallScaler");
   MonitorElement *hltScaler = dbe_->get(overallScalerName);
   if ( hltScaler != 0 ) {
     double current_count = hltScaler->getBinContent(1);
-    hltCount_->setBinContent(nL,current_count);
+
+    if (debug_) cout << "histo " << overallScalerName << " has "
+                     << current_count << "  counts for this lumi "
+                     <<endl 
+                     << "  copying info into " << hltCount_->getName()
+                     << endl;
+    double tempBinContent = hltCount_->getBinContent(nL);
+    hltCount_->setBinContent(nL,current_count+tempBinContent);
     recentOverallCountsPerLS_.update(CountLS_t(nL,current_count));
     std::pair<double,double> sl =  getSlope_(recentOverallCountsPerLS_);
     double slope = sl.first; double slope_err = sl.second;
     if ( slope > 0 ) {
+      if (debug_) cout << "filling histo   "
+                       << hltRate_->getName() << endl;
       hltRate_->setBinContent(nL,slope);
       if ( ! std::isnan(slope_err ) && (slope_err >= 0 )  )
-	hltRate_->setBinError(nL,slope_err);
+        hltRate_->setBinError(nL,slope_err);
+    } else {
+      if (debug_) cout << "did not fill histo because slope was <=0  "
+                       << hltRate_->getName() << endl;
     }
   } // found  histo
 
 
 
+  if (debug_) cout << "Number of FU we found = " << num_fu << endl
+                   << "Max number of FU's " << maxFU_ << endl;
+  
   if ( num_fu >= 0.95*maxFU_ ) {
+
+    if (debug_) cout << "we have decided that the number of FU's"
+                     << "is big enough to continue" << endl;
+    
     if ( num_fu > maxFU_ ) {
       maxFU_ = num_fu;
       if ( debug_ ) 
 	std::cout << "maxFU is now " << maxFU_ << std::endl;
     }
+
+    
     // good data
+    if (debug_) cout << "====================  Scalers loop over paths " << scalers->getName() << "==============" << endl;
     for ( int i = 1; i <= npaths; ++i ) { // bins start at 1
       double current_count = scalers->getBinContent(i);
       // DEBUG
@@ -422,15 +573,21 @@ void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg,
       double slope = sl.first; double slope_err = sl.second;
       //rateHistories_[i-1]->Fill(nL,slope);
       if ( slope > 0 ) {
-	rateHistories_[i-1]->setBinContent(nL,slope);
-	// set the current rate(s)
-	hltCurrentRate_[(i-1)/kPerHisto]->setBinContent(i%kPerHisto, slope);
-	currentRate_->setBinContent(i, slope);
-	if ( ! std::isnan(slope_err ) && (slope_err >= 0 ) ) {
-	  currentRate_->setBinError(i, slope_err);
-	  hltCurrentRate_[(i-1)/kPerHisto]->setBinError(i%kPerHisto, slope_err);
-	  rateHistories_[i-1]->setBinError(nL,slope_err);
-	}
+
+        if (debug_ && current_count > 0) {
+          cout << "Filling histo " << rateHistories_[i-1]->getName() << ", "
+               << " and " <<currentRate_->getName() 
+               << endl;          
+        }
+        rateHistories_[i-1]->setBinContent(nL,slope);
+        // set the current rate(s)
+        hltCurrentRate_[(i-1)/kPerHisto]->setBinContent(i%kPerHisto, slope);
+        currentRate_->setBinContent(i, slope);
+        if ( ! std::isnan(slope_err ) && (slope_err >= 0 ) ) {
+          currentRate_->setBinError(i, slope_err);
+          hltCurrentRate_[(i-1)/kPerHisto]->setBinError(i%kPerHisto, slope_err);
+          rateHistories_[i-1]->setBinError(nL,slope_err);
+        }
       }
       //// HACK - normalized path rates
       //// END HACK
@@ -440,9 +597,14 @@ void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg,
     // ---------------------------- overall rate, absolute counts
     std::string overallScalerName(folderName_ + "/raw/hltOverallScaler");
     MonitorElement *hltScaler = dbe_->get(overallScalerName);
-    if ( hltScaler != 0 ) {
+    if ( hltScaler != 0 ) {      
       double current_count = hltScaler->getBinContent(1);
-      hltCount_->setBinContent(nL,current_count);
+      if (debug_ && current_count > 0) {
+        cout << "Filling histo " << hltCount_->getName() << ", this is potentially a duplication"
+             << endl;          
+      }
+      double tempBinContent = hltCount_->getBinContent(nL);
+      hltCount_->setBinContent(nL,current_count+tempBinContent);
       recentOverallCountsPerLS_.update(CountLS_t(nL,current_count));
       std::pair<double,double> sl =  getSlope_(recentOverallCountsPerLS_);
       double slope = sl.first; double slope_err = sl.second;
@@ -455,59 +617,18 @@ void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg,
     updates_->Fill(0); // good
   } // check on number of FU's - good data
   else {
+
+    if (debug_ )
+      cout << "Oops, we didn't have enough FUs to fill any of the following" << endl
+           << rateHistories_[0]->getName() << ", " << rateHistories_[1]->getName() << "... etc"
+           << endl
+           << hltCurrentRate_[0]->getName() << ", " << hltCurrentRate_[1]->getName() << endl
+           << hltRate_->getName() << endl
+           <<endl; 
     updates_->Fill(1); // missing updates
   }
-  
-  // PW DEBUG
-  if ( debug_ ) {
-    textfile_ << nL << "\t"
-	      << npaths << "\t";
-    for ( int i = 0; i < npaths ; ++i ) {
-      textfile_ << scalers->getBinContent(i) << " ";
-    }
-    textfile_ << std::endl;
-  }
-  // end DEBUG
 
-
-#ifdef LATER
-  // ------ overall rate normalized - all data
-  overallScalerName = std::string(folderName_ + "/raw/hltOverallScalerN");
-  hltScaler = dbe_->get(overallScalerName);
-  if ( hltScaler != 0 ) {
-    double cnt = hltScaler->getBinContent(1);
-//     hltCountN_->setBinContent(nL,cnt);
-    if ( debug_ ) {
-      std::cout << "Overall Norm: new => cnt, ls = " 
-		<< cnt << ", " << nL
-		<< ", num_fu = " << num_fu 
-		<< std::endl;
-    }
-    recentNormedOverallCountsPerLS_.update(CountLS_t(nL, cnt/num_fu));
-    cnt = recentNormedOverallCountsPerLS_.getCount(nL); // for dupes/partials
-    double slope = cnt / num_fu / SECS_PER_LUMI_SECTION;
-    if ( debug_ )  {
-      std::cout << "Normalized slope = " << slope << std::endl;
-    }
-    if ( slope > 0 ) 
-      hltNormRate_->setBinContent(nL,slope);
-  }
-  // 
-  std::string scalHistoNorm = folderName_ + "/raw/hltScalersN";
-  MonitorElement *scalersN = dbe_->get(scalHistoNorm);
-  if ( scalersN ) {
-    for (int i = 0; i < npaths ; ++i ) {
-      double cnt = scalersN->getBinContent(i);
-      double slope = cnt / num_fu / SECS_PER_LUMI_SECTION;
-      if ( slope > 0 ) {
-	rateNormHistories_[i-1]->setBinContent(nL,slope);
-	// set the current rate(s)
-	hltCurrentNormRate_[(i-1)/kPerHisto]->setBinContent(i%kPerHisto, slope);
-	currentNormRate_->setBinContent(i, slope);
-      }
-    }
-  }
-#else // NOT LATER
+  if (debug_) std::cout << "In the section of code called NOT LATER" << std::endl;
   // ------ overall rate normalized - all data
   overallScalerName = std::string(folderName_ + "/raw/hltOverallScaler");
   hltScaler = dbe_->get(overallScalerName);
@@ -516,10 +637,9 @@ void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg,
 //     hltCountN_->setBinContent(nL,cnt);
     float sf = num_fu/maxFU_;
     if ( debug_ ) {
-      std::cout << "Overall Norm: new => cnt, ls = " 
-		<< cnt << ", " << nL
-		<< ", num_fu = " << num_fu << ", sf = " << sf
-		<< std::endl;
+
+      cout << "Getting counts from histo " << hltScaler->getName()
+           << " scaling them by some function of " << sf << endl;
     }
     recentNormedOverallCountsPerLS_.update(CountLS_t(nL, cnt/sf));
     cnt = recentNormedOverallCountsPerLS_.getCount(nL); // for dupes/partials
@@ -529,19 +649,32 @@ void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg,
       std::cout << "Normalized slope = " << slope << std::endl;
     }
     if ( slope > 0 ) {
+      std::cout << "Filling histogram " << hltNormRate_->getName() <<endl;
       hltNormRate_->setBinContent(nL,slope);
       if ( cnt > 0 ) slope_err = slope*sqrt( 2./num_fu + 2./cnt);
       if ( ! std::isnan(slope_err ) && (slope_err >= 0 )  )
 	hltNormRate_->setBinError(nL,slope_err);
+    } else {
+      if (debug_) std::cout << "Not Filling histogram " << hltNormRate_->getName() << endl;
     }
+      
   }
   // 
   std::string scalHistoNorm = folderName_ + "/raw/hltScalers";
   MonitorElement *scalersN = dbe_->get(scalHistoNorm);
   if ( scalersN ) {
     double sf = num_fu /maxFU_;
+    if (debug_) cout << "==================== Noramlized Scalers llok over paths " << scalersN->getName() << "==============" << endl;
     for (int i = 1; i <= npaths ; ++i ) {
       double cnt = scalersN->getBinContent(i);
+
+      if (debug_ && (cnt > 0)) {
+        std::cout << "Path  " << scalersN->getTH1()->GetXaxis()->GetBinLabel(i)
+                  << "  normalized counts " << cnt
+                  << "  going into histogram " << rateNormHistories_[i-1]->getName()
+                  << std::endl;
+      }
+
       recentNormedPathCountsPerLS_[i-1].update(CountLS_t(nL,cnt/sf));
       std::pair<double,double> sl =  getSlope_(recentNormedPathCountsPerLS_[i-1]);
       double slope = sl.first; double slope_err = sl.second;
@@ -569,18 +702,68 @@ void HLTScalersClient::endLuminosityBlock(const edm::LuminosityBlock& lumiSeg,
     }
   }
 
-#endif // LATER
+  /////////////////////////////////
   //
+  //  JMS Try to fill PD rates
+  //
+  /////////////////////////////////
 
+  if (foundPDScalers) {
+
+
+    //   The counts for each PD correspond to 
+    //   a bin in the PD scalers histos
+    //
+    //  Loop over bins, turn the counts into a rate
+    //  and store the rate in the right histogram
     
+    for (int i = 0; i < numPDs; i++){
+
+
+      // make sure you account for not just the events in the
+      // new scaler histo
+      // but also the events in the current histo
+      
+      double current_count = pdScalers->getBinContent(i+1);
+      
+      // Mess around with silly rate estimate
+
+      // give this crazy data structure some new info
+      recentPdCountsPerLS_[i].update(CountLS_t(nL, current_count));
+
+      // get a slope estimate of rate
+      // that is "smoothed" somehow
+      // not sure how this works
+      // but being consistent with other rates
+
+      std::pair<double,double> estimatedRateAndErr = getSlope_(recentPdCountsPerLS_[i]);
+
+      // first part is slope, second is error
+      double estimatedRate = estimatedRateAndErr.first;
+      
+      hltPdRate_[i]->setBinContent(nL, estimatedRate);
+
+      // Add the current count to any other counts for this
+      // current lumi section
+      
+      double tempBinContent = hltPdCount_[i]->getBinContent(nL);
+
+      double totalCounts = tempBinContent + current_count;
+      hltPdCount_[i]->setBinContent(nL, totalCounts);
+      if (debugPd && (totalCounts > 0)) {
+        cout << "Just filled " << hltPdCount_[i]->getTitle()
+             << " for LS = " << nL
+             << "  with  count = " << totalCounts << endl; 
+      }
+
+
+    }
+    
+  }// end if found pd scalers
 
 }
 
 // unused
-void HLTScalersClient::analyze(const edm::Event& e, const edm::EventSetup& c ) 
-{
-  // nothing to do here
-}
 
 // this is probably overkill. Do a least-squares fit to get slope
 // note that the data is in units of counts, ls number
